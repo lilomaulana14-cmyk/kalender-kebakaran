@@ -96,17 +96,57 @@ else:
 # 5. TAMPILKAN
 # ======================================================================
 
-a, b, c = st.columns(3)
-a.metric("Rasio VIIRS : MODIS", f"{rasio:.2f}×")
-b.metric("Bulan tumpang-tindih", f"{len(tumpang)}")
-c.metric("Rentang", f"{int(per_sensor.index.get_level_values('tahun').min())}–"
-                    f"{int(per_sensor.index.get_level_values('tahun').max())}")
+# ---- angka pembuka: yang membuat orang berhenti menggulir ----
+per_tahun = harmoni.groupby("tahun").sum()
+per_bulan = harmoni.groupby("bulan").sum()
 
-st.info(
-    f"VIIRS mendeteksi **{rasio:.2f}× lebih banyak** titik api daripada MODIS "
-    f"pada periode dan wilayah yang sama. Selisih ini berasal dari ukuran "
-    f"piksel (375 m vs 1 km), bukan dari jumlah kebakaran yang berbeda."
+tahun_ini = int(per_tahun.index.max())
+peringkat = int((per_tahun > per_tahun.loc[tahun_ini]).sum()) + 1
+musim = per_bulan.loc[[8, 9, 10]].sum() / per_bulan.sum() * 100
+bulan_puncak = BULAN[int(per_bulan.idxmax()) - 1]
+
+h1, h2, h3 = st.columns(3)
+h1.metric(f"Kebakaran terjadi di Agu–Okt", f"{musim:.0f}%",
+          help="Bagian dari seluruh deteksi 26 tahun yang jatuh di tiga bulan ini")
+h2.metric(f"Peringkat {tahun_ini} dalam 26 tahun", f"ke-{peringkat}",
+          help="Semakin kecil, semakin parah")
+h3.metric("Bulan terparah sepanjang sejarah", bulan_puncak)
+
+st.markdown(
+    f"""
+Kebakaran gambut Indonesia tidak menyebar seperti kebakaran hutan biasa.
+Apinya **membara di bawah permukaan** — tanpa nyala, pada suhu jauh lebih
+rendah, dan bisa bertahan berbulan-bulan setelah asap di permukaan hilang.
+
+Jejak panas permukaannya kecil. Justru karena itu, satelit dengan piksel
+besar sering **melewatkannya**.
+
+> *[ISI SENDIRI — satu paragraf: kenapa ini penting bagi orang yang tinggal
+> di sana, dan apa yang bisa dilakukan petugas dengan kalender ini.]*
+"""
 )
+
+with st.expander("Bagaimana dua sensor ini disatukan"):
+    st.markdown(
+        f"""
+NASA mendeteksi titik api dengan dua instrumen berbeda:
+
+| | piksel | mulai |
+|---|---|---|
+| **MODIS** (Terra, Aqua) | ~1 km | 2000 |
+| **VIIRS** (Suomi NPP, NOAA-20) | ~375 m | 2012 |
+
+Piksel VIIRS luasnya sekitar **tujuh kali lebih kecil**, jadi api yang sama
+mengisi bagian yang jauh lebih besar dari satu piksel dan terdeteksi lebih
+mudah. Akibatnya, pada wilayah dan periode yang sama VIIRS mencatat
+**{rasio:.2f}× lebih banyak** titik api daripada MODIS — diukur dari
+**{len(tumpang)} bulan** ketika keduanya beroperasi bersamaan.
+
+Selisih itu berasal dari sensornya, bukan dari jumlah kebakaran. Menjumlahkan
+keduanya mentah-mentah akan memunculkan lonjakan palsu pada 2012, saat VIIRS
+mulai mengudara. Rasio di atas dipakai untuk menghapus lonjakan itu.
+        """
+    )
 
 
 def jadi_kalender(seri):
@@ -146,6 +186,66 @@ with tab1:
     st.plotly_chart(gambar(jadi_kalender(pilih_tahun),
                            f"Setelah harmonisasi — {satuan.lower()}"),
                     width='stretch')
+
+
+with tabp:
+    # ---- peta sebaran titik api ----
+    BERKAS_PETA = {
+        "Kalimantan Tengah": "peta_kalteng.csv",
+        "Indonesia": "peta_indonesia.csv",
+    }
+
+    try:
+        p = pd.read_csv(BERKAS_PETA[nama_area])
+    except FileNotFoundError:
+        p = None
+        st.warning("File peta belum ada. Jalankan `py agregasi_peta.py` dulu.")
+
+    if p is not None:
+        kiri, kanan = st.columns([1, 2])
+        with kiri:
+            sensor_peta = st.selectbox(
+                "Sensor", sorted(p["sensor"].unique()),
+                index=sorted(p["sensor"].unique()).index("VIIRS_SNPP")
+                if "VIIRS_SNPP" in p["sensor"].values else 0,
+                key="sensor_peta",
+            )
+        with kanan:
+            p_min, p_maks = int(p["tahun"].min()), int(p["tahun"].max())
+            th_dari, th_sampai = st.slider(
+                "Rentang tahun", p_min, p_maks, (p_min, p_maks),
+                key="tahun_peta",
+            )
+
+        titik = (
+            p[(p["sensor"] == sensor_peta)
+              & p["tahun"].between(th_dari, th_sampai)]
+            .groupby(["lat", "lon"], as_index=False)["n"].sum()
+        )
+
+        if len(titik) == 0:
+            st.info("Tidak ada deteksi pada pilihan ini.")
+        else:
+            # st.map membaca size dalam METER, sedangkan n bisa puluhan ribu.
+            # Jadi diskalakan ke rentang 600 m - 11 km (kotaknya sendiri 25 km).
+            n_maks = titik["n"].max()
+            titik["ukuran"] = 600 + (titik["n"] / n_maks) * 10_400
+
+            st.map(titik, latitude="lat", longitude="lon",
+                   size="ukuran", color="#d62728")
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Kotak dengan titik api", f"{len(titik):,}")
+            m2.metric("Total deteksi", f"{int(titik['n'].sum()):,}")
+            m3.metric("Kotak terpadat", f"{int(titik['n'].max()):,}")
+
+        st.caption(
+            f"Tiap lingkaran = satu kotak 0,25° (±25 km). Ukurannya "
+            f"sebanding dengan jumlah deteksi {sensor_peta} pada "
+            f"{th_dari}–{th_sampai}. Peta menampilkan deteksi mentah per "
+            f"sensor, bukan angka hasil harmonisasi — harmonisasi dipakai "
+            f"untuk membandingkan **waktu**, sedangkan peta menunjukkan "
+            f"**tempat**."
+        )
 
 
 with tab2:
