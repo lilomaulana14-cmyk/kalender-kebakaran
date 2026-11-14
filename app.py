@@ -1,43 +1,158 @@
+"""
+Kalender Aktivitas Kebakaran — harmonisasi MODIS & VIIRS
+NASA Space Apps Challenge 2026 · Local Event Yogyakarta
+"""
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
+         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
+
 st.set_page_config(page_title="Kalender Kebakaran", layout="wide")
-
 st.title("Kalender Aktivitas Kebakaran")
-st.caption("Lahan gambut Kalimantan Tengah · data titik api NASA FIRMS")
+st.caption("Harmonisasi MODIS & VIIRS · data titik api NASA FIRMS · 2000–2026")
 
-# ---- baca data ----
-d = pd.read_csv("agregat_kalteng.csv")
 
-# ---- pilihan pengguna ----
-sensor = st.selectbox("Sensor", sorted(d["sensor"].unique()))
+# ======================================================================
+# 1. BACA DATA
+# ======================================================================
 
-# ---- saring dan susun jadi tahun x bulan ----
-pilih = d[d["sensor"] == sensor]
+AREA = {
+    "Kalimantan Tengah": "agregat_kalteng.csv",
+    "Indonesia": "agregat_indonesia.csv",
+}
 
-tabel = (
-    pilih.pivot_table(index="tahun", columns="bulan", values="n", aggfunc="sum")
-    .reindex(columns=range(1, 13))      # pastikan 12 bulan selalu ada
+kolom_kiri, kolom_kanan = st.columns(2)
+with kolom_kiri:
+    nama_area = st.selectbox("Area", list(AREA.keys()))
+with kolom_kanan:
+    satuan = st.radio("Satuan kalender", ["Skala VIIRS", "Skala MODIS"],
+                      horizontal=True)
+
+d = pd.read_csv(AREA[nama_area])
+
+
+# ======================================================================
+# 2. SUSUN JADI TABEL tahun-bulan x sensor
+# ======================================================================
+
+# PILIHAN METODE: semua pita kepercayaan dipakai (l, n, h).
+# Kalau mau menyaring, ganti baris di bawah ini, misalnya:
+#     d = d[d["pita"].isin(["n", "h"])]
+
+per_sensor = (
+    d.groupby(["tahun", "bulan", "sensor"])["n"].sum()
+    .unstack("sensor")
     .fillna(0)
 )
 
-BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun",
-         "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
-tabel.columns = BULAN
+for s in ["MODIS", "VIIRS_SNPP", "VIIRS_NOAA20"]:
+    if s not in per_sensor.columns:
+        per_sensor[s] = 0.0
 
-# ---- gambar kalender ----
-fig = px.imshow(
-    tabel,
-    labels=dict(x="Bulan", y="Tahun", color="Titik api"),
-    color_continuous_scale="Reds",     # satu warna, terang -> gelap
-    aspect="auto",
+# Gabungkan dua satelit VIIRS jadi satu kolom.
+# S-NPP dipakai lebih dulu; NOAA-20 mengisi saat S-NPP tidak ada
+# (S-NPP berhenti 2 November 2026).
+per_sensor["VIIRS"] = per_sensor["VIIRS_SNPP"].where(
+    per_sensor["VIIRS_SNPP"] > 0, per_sensor["VIIRS_NOAA20"]
 )
-fig.update_yaxes(dtick=1)
-fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), height=600)
 
-st.plotly_chart(fig, use_container_width=True)
 
-# ---- tabel angkanya, bagi yang mau baca persis ----
-with st.expander("Lihat angkanya"):
-    st.dataframe(tabel.astype(int), use_container_width=True)
+# ======================================================================
+# 3. HITUNG RASIO DARI PERIODE TUMPANG-TINDIH
+# ======================================================================
+
+# Hanya bulan-bulan ketika KEDUA sensor sama-sama mendeteksi.
+tumpang = per_sensor[(per_sensor["MODIS"] > 0) & (per_sensor["VIIRS"] > 0)]
+
+# PILIHAN METODE: rasio dihitung dari TOTAL, bukan rata-rata rasio bulanan.
+# Alasan: bulan dengan sedikit kebakaran menghasilkan rasio yang liar
+# (3 banding 1 = 3,0), dan merata-ratakannya memberi bobot sama pada
+# bulan sepi dan bulan puncak. Total memberi bobot sesuai aktivitas.
+rasio = tumpang["VIIRS"].sum() / tumpang["MODIS"].sum()
+
+
+# ======================================================================
+# 4. HARMONISASI
+# ======================================================================
+
+# Aturan: pakai VIIRS bila ada (lebih tajam); bila tidak ada,
+# naikkan MODIS dengan rasio supaya setara skala VIIRS.
+harmoni_viirs = per_sensor["VIIRS"].where(
+    per_sensor["VIIRS"] > 0, per_sensor["MODIS"] * rasio
+)
+
+if satuan == "Skala MODIS":
+    harmoni = harmoni_viirs / rasio
+    mentah = per_sensor["MODIS"] + per_sensor["VIIRS"]
+else:
+    harmoni = harmoni_viirs
+    mentah = per_sensor["MODIS"] + per_sensor["VIIRS"]
+
+
+# ======================================================================
+# 5. TAMPILKAN
+# ======================================================================
+
+a, b, c = st.columns(3)
+a.metric("Rasio VIIRS : MODIS", f"{rasio:.2f}×")
+b.metric("Bulan tumpang-tindih", f"{len(tumpang)}")
+c.metric("Rentang", f"{int(per_sensor.index.get_level_values('tahun').min())}–"
+                    f"{int(per_sensor.index.get_level_values('tahun').max())}")
+
+st.info(
+    f"VIIRS mendeteksi **{rasio:.2f}× lebih banyak** titik api daripada MODIS "
+    f"pada periode dan wilayah yang sama. Selisih ini berasal dari ukuran "
+    f"piksel (375 m vs 1 km), bukan dari jumlah kebakaran yang berbeda."
+)
+
+
+def jadi_kalender(seri):
+    """Ubah seri (tahun, bulan) jadi grid tahun x bulan."""
+    g = seri.unstack("bulan").reindex(columns=range(1, 13)).fillna(0)
+    g.columns = BULAN
+    return g
+
+
+def gambar(grid, judul):
+    fig = px.imshow(
+        grid,
+        labels=dict(x="Bulan", y="Tahun", color="Titik api"),
+        color_continuous_scale="Reds",   # satu warna, terang -> gelap
+        aspect="auto",
+    )
+    fig.update_yaxes(dtick=1)
+    fig.update_layout(title=judul, margin=dict(l=0, r=0, t=40, b=0), height=620)
+    return fig
+
+
+tab1, tab2, tab3 = st.tabs(["Kalender harmonisasi", "Sebelum vs sesudah", "Data"])
+
+with tab1:
+    st.plotly_chart(gambar(jadi_kalender(harmoni),
+                           f"Setelah harmonisasi — {satuan.lower()}"),
+                    use_container_width=True)
+
+with tab2:
+    st.markdown(
+        "Tanpa harmonisasi, grafik melonjak tajam saat VIIRS mulai mengudara "
+        "pada 2012 — lonjakan itu **palsu**, berasal dari sensornya, bukan "
+        "dari kebakarannya."
+    )
+    tahunan = pd.DataFrame({
+        "Dijumlahkan mentah": mentah.groupby("tahun").sum(),
+        "Setelah harmonisasi": harmoni.groupby("tahun").sum(),
+    })
+    st.line_chart(tahunan)
+
+with tab3:
+    grid = jadi_kalender(harmoni).round(0).astype(int)
+    st.dataframe(grid, use_container_width=True)
+    st.download_button(
+        "Unduh CSV",
+        grid.to_csv().encode("utf-8"),
+        file_name=f"kalender_{nama_area.lower().replace(' ', '_')}.csv",
+        mime="text/csv",
+    )
