@@ -128,8 +128,9 @@ def gambar(grid, judul):
     return fig
 
 
-tab1, tab2, tab3, tab4 = st.tabs(
-    ["Kalender harmonisasi", "Bulan berjalan", "Sebelum vs sesudah", "Data"]
+tab1, tabp, tab2, tab3, tab4 = st.tabs(
+    ["Kalender harmonisasi", "Peta", "Bulan berjalan",
+     "Sebelum vs sesudah", "Data"]
 )
 
 with tab1:
@@ -190,6 +191,12 @@ with tab2:
     st.caption(
         f"Jumlah titik api bulan {BULAN[bulan_akhir - 1]} di tiap tahun. "
         f"Batang terakhir adalah bulan berjalan."
+    )
+    st.warning(
+        f"**Keterbatasan:** bulan {BULAN[bulan_akhir - 1]} {tahun_akhir} belum "
+        f"selesai — datanya berhenti pada tanggal unduhan. Median dihitung dari "
+        f"bulan-bulan penuh, jadi perbandingan ini bukan setara dan cenderung "
+        f"**merendahkan** aktivitas bulan berjalan."
     )
 
 with tab3:
