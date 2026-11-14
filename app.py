@@ -128,14 +128,71 @@ def gambar(grid, judul):
     return fig
 
 
-tab1, tab2, tab3 = st.tabs(["Kalender harmonisasi", "Sebelum vs sesudah", "Data"])
+tab1, tab2, tab3, tab4 = st.tabs(
+    ["Kalender harmonisasi", "Bulan berjalan", "Sebelum vs sesudah", "Data"]
+)
 
 with tab1:
-    st.plotly_chart(gambar(jadi_kalender(harmoni),
+    # penggeser rentang tahun
+    th_min = int(harmoni.index.get_level_values("tahun").min())
+    th_maks = int(harmoni.index.get_level_values("tahun").max())
+    dari, sampai = st.slider("Rentang tahun", th_min, th_maks,
+                             (th_min, th_maks))
+
+    pilih_tahun = harmoni[
+        harmoni.index.get_level_values("tahun").isin(range(dari, sampai + 1))
+    ]
+    st.plotly_chart(gambar(jadi_kalender(pilih_tahun),
                            f"Setelah harmonisasi — {satuan.lower()}"),
-                    use_container_width=True)
+                    width='stretch')
+
 
 with tab2:
+    # ---- bulan berjalan dibanding median historis ----
+    # Ini yang diminta challenge: bandingkan aktivitas bulan berjalan
+    # dengan median historis bulan yang sama.
+    tahun_akhir = int(harmoni.index.get_level_values("tahun").max())
+    terakhir = harmoni.loc[tahun_akhir]
+    bulan_akhir = int(terakhir.index.max())
+
+    nilai_kini = float(terakhir.loc[bulan_akhir])
+
+    # median bulan yang sama, dari semua tahun SEBELUMNYA
+    sejarah = harmoni[
+        (harmoni.index.get_level_values("bulan") == bulan_akhir)
+        & (harmoni.index.get_level_values("tahun") < tahun_akhir)
+    ]
+    median_sejarah = float(sejarah.median())
+
+    st.subheader(f"{BULAN[bulan_akhir - 1]} {tahun_akhir}")
+
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Bulan ini", f"{nilai_kini:,.0f}")
+    k2.metric(f"Median {BULAN[bulan_akhir - 1]} ({th_min}–{tahun_akhir - 1})",
+              f"{median_sejarah:,.0f}")
+
+    if median_sejarah > 0:
+        selisih = (nilai_kini - median_sejarah) / median_sejarah * 100
+        k3.metric("Selisih dari median", f"{selisih:+.0f}%",
+                  delta=f"{selisih:+.0f}%")
+        if selisih > 50:
+            st.error(f"Aktivitas kebakaran **jauh di atas** median historis "
+                     f"untuk bulan {BULAN[bulan_akhir - 1]}.")
+        elif selisih < -50:
+            st.success("Aktivitas kebakaran jauh di bawah median historis.")
+        else:
+            st.info("Aktivitas kebakaran mendekati median historis.")
+
+    # perbandingan bulan ini terhadap semua tahun
+    banding = sejarah.droplevel("bulan").rename("historis").to_frame()
+    banding.loc[tahun_akhir] = nilai_kini
+    st.bar_chart(banding, height=320)
+    st.caption(
+        f"Jumlah titik api bulan {BULAN[bulan_akhir - 1]} di tiap tahun. "
+        f"Batang terakhir adalah bulan berjalan."
+    )
+
+with tab3:
     st.markdown(
         "Tanpa harmonisasi, grafik melonjak tajam saat VIIRS mulai mengudara "
         "pada 2012 — lonjakan itu **palsu**, berasal dari sensornya, bukan "
@@ -147,9 +204,9 @@ with tab2:
     })
     st.line_chart(tahunan)
 
-with tab3:
+with tab4:
     grid = jadi_kalender(harmoni).round(0).astype(int)
-    st.dataframe(grid, use_container_width=True)
+    st.dataframe(grid, width='stretch')
     st.download_button(
         "Unduh CSV",
         grid.to_csv().encode("utf-8"),
